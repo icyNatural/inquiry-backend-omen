@@ -1,0 +1,10 @@
+﻿fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+chromadb
+sentence-transformers
+ollama
+httpx
+python-dotenv
+pytest
