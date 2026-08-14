@@ -1,34 +1,26 @@
-import os
-import re
+﻿import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 import chromadb
 from sentence_transformers import SentenceTransformer
-from app.services import llm_service
+import ollama
 
-from app.services.scope_service import ScopeProcessor
-from app.services.mode_prompts import MODE_PROMPTS, SUPPORTED_MODES
-
-CHROMA_DIR = os.getenv("INQUIRY_CHROMA_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\chroma_db")
-COLLECTION_NAME = os.getenv("INQUIRY_CHROMA_COLLECTION", "chat_notes")
-OLLAMA_MODEL = os.getenv("INQUIRY_OLLAMA_MODEL", "gemma3:4b")
+CHROMA_DIR = "chroma_db"
+COLLECTION_NAME = "chat_notes"
+OLLAMA_MODEL = "gemma3:4b"
 
 TOP_K_FINAL = 5
 TOP_K_PER_QUERY = 8
 MAX_HISTORY_TURNS = 0
 SNIPPET_LEN = 220
 
-REFINED_ROOT = Path(os.getenv("INQUIRY_REFINED_NOTES_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\inquiry_engine_step3_complete\refined_notes"))
+REFINED_ROOT = Path("refined_notes")
 
-# Use memory_service where possible for collection/embedding access (centralized in Phase 3)
-from app.services.memory_service import get_collection, get_embedding_model
-
-# Keep a module-level reference for backward compatibility with code that expects
-# a `collection` and `embed_model` variables; these are obtained from memory_service.
-collection = get_collection()
-embed_model = get_embedding_model()
+client = chromadb.PersistentClient(path=CHROMA_DIR)
+collection = client.get_collection(name=COLLECTION_NAME)
+embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 history = []
 current_mode = "recall"
@@ -44,7 +36,87 @@ last_saved_path = None
 last_search_queries = None
 last_selected_results = None
 
-# Mode prompts are centralized in app.services.mode_prompts
+MODE_PROMPTS = {
+    "recall": """You are a simple personal memory recall assistant.
+
+Use the retrieved notes to answer the current question directly.
+
+Rules:
+- Keep it short.
+- Recall what the notes say.
+- Do not continue old conversations.
+- Do not give next steps unless asked.
+""",
+    "synthesis": """You are the user's personal knowledge synthesis assistant.
+
+Goal:
+Combine retrieved notes into a more integrated higher-level answer.
+
+Return this structure:
+
+Direct answer:
+<short paragraph>
+
+Main patterns:
+- bullet
+- bullet
+- bullet
+
+Cross-note synthesis:
+<short paragraph>
+
+Key note signals:
+- title -> short signal
+- title -> short signal
+""",
+    "raw": """You are the user's raw note retrieval assistant.
+
+Goal:
+Minimize interpretation. Show the strongest retrieved signals directly.
+
+Return this structure:
+
+Direct answer:
+<1-2 lines max>
+
+Raw signals:
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+
+Minimal synthesis:
+<one short sentence or 'None.'>
+
+Rules:
+- Be as literal as possible.
+- Prefer extraction over explanation.
+""",
+    "framework": """You are the user's framework extraction assistant.
+
+Goal:
+Turn retrieved notes into a reusable structured model.
+
+Return this structure:
+
+Direct answer:
+<short paragraph>
+
+Framework elements:
+- principle:
+- mechanism:
+- pattern:
+- failure mode:
+- application:
+
+Relevant note signals:
+- title -> short signal
+- title -> short signal
+
+Optional synthesis:
+<short only if useful>
+"""
+}
 
 
 def ensure_refined_dirs():
@@ -317,9 +389,9 @@ Candidates:
     ranked = []
 
     try:
-        response = llm_service.chat(
-            OLLAMA_MODEL,
-            [{"role": "user", "content": prompt}]
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}]
         )
 
         text = response["message"]["content"]
@@ -433,9 +505,9 @@ Ignore:
 """
 
     try:
-        response = llm_service.chat(
-            OLLAMA_MODEL,
-            [{"role": "user", "content": prompt}]
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}]
         )
         return response["message"]["content"].strip()
     except Exception:
@@ -957,143 +1029,196 @@ def open_note(name: str):
     print("=" * 80 + "\n")
     print(text)
     print()
-def investigate(
-    user_query: str,
-    mode: str = "recall",
-    scope: dict | None = None,
-    knowledge_policy: str = "memory_only",
-) -> dict:
-    """
-    Run one complete Inquiry Engine request without terminal input.
 
-    Pipeline:
-    query expansion
-    -> Chroma retrieval
-    -> result diversification
-    -> Ollama reranking
-    -> source interpretation
-    -> mode-specific response
-    """
 
-    global current_mode
+ensure_refined_dirs()
 
-    clean_query = user_query.strip()
-    clean_mode = mode.strip().lower()
+print("Personal Knowledge AI is ready.")
+print("Type your question and press Enter.")
+print("Commands: exit, quit, clear, sources off, sources on, save, save as <name>")
+print("Library: list notes, find tag <tag>, list tags, find mode <mode>, open last, open note <name>")
+print("Modes: mode recall, mode synthesis, mode raw, mode framework")
+print("Debug: debug on, debug off\n")
 
-    if not clean_query:
-        raise ValueError("Question cannot be empty.")
+while True:
+    try:
+        query = input(f"Ask your AI [{current_mode}]: ").strip()
+    except KeyboardInterrupt:
+        print("\nGoodbye.")
+        break
 
-    if clean_mode not in MODE_PROMPTS:
-        raise ValueError(
-            "Unsupported mode. Use recall, synthesis, framework, raw, grounding, or mapping."
-        )
+    if not query:
+        continue
 
-    current_mode = clean_mode
-    ensure_refined_dirs()
+    cmd = query.lower()
 
-    search_queries = generate_search_queries(
-        clean_query,
-        current_mode,
-    )
+    if cmd in {"exit", "quit"}:
+        print("Goodbye.")
+        break
 
+    if cmd == "clear":
+        history.clear()
+        print("Conversation history cleared.\n")
+        continue
+
+    if cmd == "sources off":
+        show_sources = False
+        print("Source display turned off.\n")
+        continue
+
+    if cmd == "sources on":
+        show_sources = True
+        print("Source display turned on.\n")
+        continue
+
+    if cmd == "debug on":
+        debug_mode = True
+        print("Debug mode turned on.\n")
+        continue
+
+    if cmd == "debug off":
+        debug_mode = False
+        print("Debug mode turned off.\n")
+        continue
+
+    if cmd == "save":
+        save_last_answer()
+        continue
+
+    if cmd.startswith("save as "):
+        custom_name = query[8:].strip()
+        if not custom_name:
+            print("Provide a name after 'save as'.\n")
+        else:
+            save_last_answer(custom_name)
+        continue
+
+    if cmd == "list notes":
+        list_notes()
+        continue
+
+    if cmd.startswith("find tag "):
+        tag = query[9:].strip()
+        if not tag:
+            print("Provide a tag after 'find tag'.\n")
+        else:
+            find_tag(tag)
+        continue
+
+    if cmd == "list tags":
+        list_tags()
+        continue
+
+    if cmd.startswith("find mode "):
+        mode_name = query[10:].strip()
+        if not mode_name:
+            print("Provide a mode after 'find mode'.\n")
+        else:
+            find_mode(mode_name)
+        continue
+
+    if cmd == "open last":
+        open_last()
+        continue
+
+    if cmd.startswith("open note "):
+        name = query[10:].strip()
+        open_note(name)
+        continue
+
+    if cmd.startswith("mode "):
+        new_mode = cmd.replace("mode ", "", 1).strip()
+        if new_mode in MODE_PROMPTS:
+            current_mode = new_mode
+            print(f"Mode changed to: {current_mode}\n")
+        else:
+            print("Unknown mode. Use: recall, synthesis, raw, framework\n")
+        continue
+
+    # Phase 4 retrieval upgrade
+    search_queries = generate_search_queries(query, current_mode)
     merged_results = merge_multi_query_results(search_queries)
+    selected_results = diversify_results(merged_results, TOP_K_FINAL)
+    selected_results = rerank_results(query, selected_results, TOP_K_FINAL)
 
-    clean_scope = scope or {}
+    documents = [item["document"] for item in selected_results]
+    metadatas = [item["metadata"] for item in selected_results]
 
-    if clean_scope:
-        merged_results = ScopeProcessor.filter_results(
-            merged_results,
-            clean_scope,
-        )
+    context = interpret_sources(query, selected_results)
+    messages = build_messages(query, context)
 
-    selected_results = diversify_results(
-        merged_results,
-        TOP_K_FINAL,
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=messages
     )
 
-    selected_results = rerank_results(
-        clean_query,
-        selected_results,
-        TOP_K_FINAL,
-    )
+    answer = response["message"]["content"]
+    tags = generate_tags(answer, query, current_mode)
 
-    # validate knowledge policy
-    if knowledge_policy not in ("memory_only", "memory_plus_model"):
-        raise ValueError("Unsupported knowledge_policy. Use 'memory_only' or 'memory_plus_model'.")
+    history.append({
+        "user": query,
+        "assistant": answer
+    })
 
-    # Handle no-memory cases according to policy
-    if not selected_results:
-        if knowledge_policy == "memory_only":
-            return {
-                "status": "ok",
-                "query": clean_query,
-                "mode": current_mode,
-                "model": OLLAMA_MODEL,
-                "answer": "No memories matched the requested scope.",
-                "organized_signals": "",
-                "search_queries": search_queries,
-                "retrieved_count": len(merged_results),
-                "selected_count": 0,
-                "sources": [],
-            }
+    last_query = query
+    last_answer = answer
+    last_documents = documents
+    last_metadatas = metadatas
+    last_tags = tags
+    last_search_queries = search_queries
+    last_selected_results = selected_results
 
-        # memory_plus_model: prepare an organized_signals note indicating fallback
-        organized_signals = (
-            "No matching memories were found.\n\n"
-            "The following answer is based on the model's general knowledge."
-        )
-    else:
-        organized_signals = interpret_sources(
-            clean_query,
-            selected_results,
-        )
+    if debug_mode:
+        print("\n" + "=" * 80)
+        print("RETRIEVAL DEBUG")
+        print("=" * 80 + "\n")
+        print("Search queries used:")
+        for i, q in enumerate(search_queries, start=1):
+            print(f"{i}. {q}")
+        print()
 
-    messages = build_messages(
-        clean_query,
-        organized_signals,
-    )
+    print("\n" + "=" * 80)
+    print("AI ANSWER")
+    print("=" * 80 + "\n")
+    print(answer)
 
-    response = llm_service.chat(OLLAMA_MODEL, messages)
-    answer = response["message"]["content"].strip()
+    print(f"\nTags: {tags}")
 
-    if knowledge_policy == "memory_plus_model" and not selected_results:
-        answer = (
-            "No matching memories were found.\n\n"
-            "The following answer is based on the model's general knowledge.\n\n"
-            + answer
-        )
+    if show_sources:
+        print("\n" + "=" * 80)
+        print("NOTE SIGNALS USED")
+        print("=" * 80 + "\n")
+        for i, item in enumerate(selected_results, start=1):
+            doc = item["document"]
+            meta = item["metadata"]
+            source_query = item.get("source_query", "unknown")
+            print(f"{i}. {meta.get('title', 'Untitled')}")
+            print(f"   signal: {make_snippet(doc)}")
+            print(f"   location: convo {meta.get('conversation_index')} | chunk {meta.get('chunk_index')}")
+            print(f"   retrieved_via: {source_query}")
+            print()
 
-    sources = []
-    for item in selected_results:
-        metadata = item["metadata"]
+    print()
 
-        sources.append(
-            {
-                "title": metadata.get("title", "Untitled"),
-                "conversation_index": metadata.get("conversation_index"),
-                "chunk_index": metadata.get("chunk_index"),
-                "source": metadata.get("source"),
-                "domain": metadata.get("domain"),
-                "distance": item.get("distance"),
-                "retrieved_via": item.get("source_query"),
-                "signal": make_snippet(
-                    item["document"],
-                    SNIPPET_LEN,
-                ),
-                "raw_text": item["document"],
-                "metadata": metadata,
-            }
-        )
 
-    return {
-        "status": "ok",
-        "query": clean_query,
-        "mode": current_mode,
-        "model": OLLAMA_MODEL,
-        "answer": answer,
-        "organized_signals": organized_signals,
-        "search_queries": search_queries,
-        "retrieved_count": len(merged_results),
-        "selected_count": len(selected_results),
-        "sources": sources,
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

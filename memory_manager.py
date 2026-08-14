@@ -1,0 +1,38 @@
+# Compatibility shim for legacy imports
+from app.legacy.memory_manager_original import (
+    get_collection,
+    get_embedding_model,
+    load_session_memory,
+    save_session_memory,
+    append_session_entry,
+    parse_markdown_metadata,
+    chunk_text,
+    index_refined_note,
+    index_all_refined_notes,
+    get_refined_notes_list,
+    read_note_content,
+    save_note_content,
+    REFINED_DIR,
+    MEMORY_DIR,
+    MEMORY_FILE,
+    COLLECTION_NAME,
+)
+
+__all__ = [
+    "get_collection",
+    "get_embedding_model",
+    "load_session_memory",
+    "save_session_memory",
+    "append_session_entry",
+    "parse_markdown_metadata",
+    "chunk_text",
+    "index_refined_note",
+    "index_all_refined_notes",
+    "get_refined_notes_list",
+    "read_note_content",
+    "save_note_content",
+    "REFINED_DIR",
+    "MEMORY_DIR",
+    "MEMORY_FILE",
+    "COLLECTION_NAME",
+]

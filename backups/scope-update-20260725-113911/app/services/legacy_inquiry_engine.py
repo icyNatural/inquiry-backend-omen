@@ -6,10 +6,7 @@ from pathlib import Path
 
 import chromadb
 from sentence_transformers import SentenceTransformer
-from app.services import llm_service
-
-from app.services.scope_service import ScopeProcessor
-from app.services.mode_prompts import MODE_PROMPTS, SUPPORTED_MODES
+import ollama
 
 CHROMA_DIR = os.getenv("INQUIRY_CHROMA_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\chroma_db")
 COLLECTION_NAME = os.getenv("INQUIRY_CHROMA_COLLECTION", "chat_notes")
@@ -22,13 +19,9 @@ SNIPPET_LEN = 220
 
 REFINED_ROOT = Path(os.getenv("INQUIRY_REFINED_NOTES_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\inquiry_engine_step3_complete\refined_notes"))
 
-# Use memory_service where possible for collection/embedding access (centralized in Phase 3)
-from app.services.memory_service import get_collection, get_embedding_model
-
-# Keep a module-level reference for backward compatibility with code that expects
-# a `collection` and `embed_model` variables; these are obtained from memory_service.
-collection = get_collection()
-embed_model = get_embedding_model()
+client = chromadb.PersistentClient(path=CHROMA_DIR)
+collection = client.get_collection(name=COLLECTION_NAME)
+embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 history = []
 current_mode = "recall"
@@ -44,7 +37,87 @@ last_saved_path = None
 last_search_queries = None
 last_selected_results = None
 
-# Mode prompts are centralized in app.services.mode_prompts
+MODE_PROMPTS = {
+    "recall": """You are a simple personal memory recall assistant.
+
+Use the retrieved notes to answer the current question directly.
+
+Rules:
+- Keep it short.
+- Recall what the notes say.
+- Do not continue old conversations.
+- Do not give next steps unless asked.
+""",
+    "synthesis": """You are the user's personal knowledge synthesis assistant.
+
+Goal:
+Combine retrieved notes into a more integrated higher-level answer.
+
+Return this structure:
+
+Direct answer:
+<short paragraph>
+
+Main patterns:
+- bullet
+- bullet
+- bullet
+
+Cross-note synthesis:
+<short paragraph>
+
+Key note signals:
+- title -> short signal
+- title -> short signal
+""",
+    "raw": """You are the user's raw note retrieval assistant.
+
+Goal:
+Minimize interpretation. Show the strongest retrieved signals directly.
+
+Return this structure:
+
+Direct answer:
+<1-2 lines max>
+
+Raw signals:
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+- title -> quoted or near-quoted signal
+
+Minimal synthesis:
+<one short sentence or 'None.'>
+
+Rules:
+- Be as literal as possible.
+- Prefer extraction over explanation.
+""",
+    "framework": """You are the user's framework extraction assistant.
+
+Goal:
+Turn retrieved notes into a reusable structured model.
+
+Return this structure:
+
+Direct answer:
+<short paragraph>
+
+Framework elements:
+- principle:
+- mechanism:
+- pattern:
+- failure mode:
+- application:
+
+Relevant note signals:
+- title -> short signal
+- title -> short signal
+
+Optional synthesis:
+<short only if useful>
+"""
+}
 
 
 def ensure_refined_dirs():
@@ -317,9 +390,9 @@ Candidates:
     ranked = []
 
     try:
-        response = llm_service.chat(
-            OLLAMA_MODEL,
-            [{"role": "user", "content": prompt}]
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}]
         )
 
         text = response["message"]["content"]
@@ -433,9 +506,9 @@ Ignore:
 """
 
     try:
-        response = llm_service.chat(
-            OLLAMA_MODEL,
-            [{"role": "user", "content": prompt}]
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}]
         )
         return response["message"]["content"].strip()
     except Exception:
@@ -957,12 +1030,7 @@ def open_note(name: str):
     print("=" * 80 + "\n")
     print(text)
     print()
-def investigate(
-    user_query: str,
-    mode: str = "recall",
-    scope: dict | None = None,
-    knowledge_policy: str = "memory_only",
-) -> dict:
+def investigate(user_query: str, mode: str = "recall") -> dict:
     """
     Run one complete Inquiry Engine request without terminal input.
 
@@ -985,7 +1053,7 @@ def investigate(
 
     if clean_mode not in MODE_PROMPTS:
         raise ValueError(
-            "Unsupported mode. Use recall, synthesis, framework, raw, grounding, or mapping."
+            "Unsupported mode. Use recall, synthesis, raw, or framework."
         )
 
     current_mode = clean_mode
@@ -998,14 +1066,6 @@ def investigate(
 
     merged_results = merge_multi_query_results(search_queries)
 
-    clean_scope = scope or {}
-
-    if clean_scope:
-        merged_results = ScopeProcessor.filter_results(
-            merged_results,
-            clean_scope,
-        )
-
     selected_results = diversify_results(
         merged_results,
         TOP_K_FINAL,
@@ -1017,53 +1077,25 @@ def investigate(
         TOP_K_FINAL,
     )
 
-    # validate knowledge policy
-    if knowledge_policy not in ("memory_only", "memory_plus_model"):
-        raise ValueError("Unsupported knowledge_policy. Use 'memory_only' or 'memory_plus_model'.")
-
-    # Handle no-memory cases according to policy
-    if not selected_results:
-        if knowledge_policy == "memory_only":
-            return {
-                "status": "ok",
-                "query": clean_query,
-                "mode": current_mode,
-                "model": OLLAMA_MODEL,
-                "answer": "No memories matched the requested scope.",
-                "organized_signals": "",
-                "search_queries": search_queries,
-                "retrieved_count": len(merged_results),
-                "selected_count": 0,
-                "sources": [],
-            }
-
-        # memory_plus_model: prepare an organized_signals note indicating fallback
-        organized_signals = (
-            "No matching memories were found.\n\n"
-            "The following answer is based on the model's general knowledge."
-        )
-    else:
-        organized_signals = interpret_sources(
-            clean_query,
-            selected_results,
-        )
+    organized_signals = interpret_sources(
+        clean_query,
+        selected_results,
+    )
 
     messages = build_messages(
         clean_query,
         organized_signals,
     )
 
-    response = llm_service.chat(OLLAMA_MODEL, messages)
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=messages,
+    )
+
     answer = response["message"]["content"].strip()
 
-    if knowledge_policy == "memory_plus_model" and not selected_results:
-        answer = (
-            "No matching memories were found.\n\n"
-            "The following answer is based on the model's general knowledge.\n\n"
-            + answer
-        )
-
     sources = []
+
     for item in selected_results:
         metadata = item["metadata"]
 

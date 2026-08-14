@@ -1,11 +1,5 @@
-import sys
-from pathlib import Path
-
-# Add scripts folder to path
-sys.path.append(str(Path(__file__).resolve().parent))
-
-from memory_manager import get_collection, get_embedding_model, get_refined_notes_list
-from scope_processor import ScopeProcessor
+from app.legacy.memory_manager_original import get_collection, get_embedding_model, get_refined_notes_list
+from app.legacy.scope_processor_original import ScopeProcessor
 
 def test_scope_filtering():
     print("=== STARTING MEMORY & SCOPE LAYER VALIDATION ===")

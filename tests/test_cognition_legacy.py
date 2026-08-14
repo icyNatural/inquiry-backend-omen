@@ -1,10 +1,4 @@
-import sys
-from pathlib import Path
-
-# Add scripts directory to path
-sys.path.append(str(Path(__file__).resolve().parent))
-
-from cognition_layer import CognitionLayer
+from app.legacy.cognition_layer_original import CognitionLayer
 
 TESTS = [
     {
