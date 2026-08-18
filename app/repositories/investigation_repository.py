@@ -104,6 +104,20 @@ class InvestigationRepository:
 
         return self._row_to_model(row) if row else None
 
+    def list_children(self, investigation_id: str) -> list[Investigation]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM investigations
+                WHERE parent_investigation_id = ?
+                ORDER BY created_at DESC
+                """,
+                (investigation_id,),
+            ).fetchall()
+
+        return [self._row_to_model(row) for row in rows]
+
     def update(
         self,
         investigation_id: str,

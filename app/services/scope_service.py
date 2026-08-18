@@ -12,6 +12,9 @@ class ScopeProcessor:
         """
         Ensure scope has all expected fields and sets defaults.
         """
+        # Accept either a plain dict or a Pydantic model (Scope)
+        if hasattr(scope, "model_dump"):
+            scope = scope.model_dump()
         if not isinstance(scope, dict):
             scope = {}
             

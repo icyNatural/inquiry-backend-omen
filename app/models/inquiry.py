@@ -1,13 +1,20 @@
 ﻿from typing import Any
+from enum import Enum
 
 from pydantic import BaseModel, Field
+from app.models.scope import Scope
+
+
+class KnowledgePolicy(str, Enum):
+    memory_only = "memory_only"
+    memory_plus_model = "memory_plus_model"
 
 
 class InquiryRequest(BaseModel):
     query: str = Field(min_length=1)
     mode: str = "recall"
-    scope: dict[str, Any] = Field(default_factory=dict)
-    knowledge_policy: str = "memory_only"
+    scope: Scope = Field(default_factory=Scope)
+    knowledge_policy: KnowledgePolicy = KnowledgePolicy.memory_only
 
 
 class InquirySource(BaseModel):

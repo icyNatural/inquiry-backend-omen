@@ -2,6 +2,7 @@
 
 from app.models.inquiry import InquiryRequest, InquiryResponse
 from app.services.legacy_inquiry_engine import investigate
+from app.services.investigation_service import run_and_persist
 
 
 router = APIRouter(
@@ -55,4 +56,6 @@ def cognition_reason(
 def investigate_alias(
     payload: InquiryRequest,
 ) -> InquiryResponse:
-    return run_investigation(payload)
+    # Persist the investigation and return the reasoning result
+    result, investigation = run_and_persist(payload)
+    return InquiryResponse.model_validate(result)

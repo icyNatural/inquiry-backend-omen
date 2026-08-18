@@ -73,3 +73,9 @@ def delete_investigation(investigation_id: str) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Investigation not found",
         )
+
+
+@router.get("/{investigation_id}/children", response_model=list[Investigation])
+def list_children(investigation_id: str) -> list[Investigation]:
+    children = repository.list_children(investigation_id)
+    return children

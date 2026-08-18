@@ -10,6 +10,9 @@ from app.services import llm_service
 
 from app.services.scope_service import ScopeProcessor
 from app.services.mode_prompts import MODE_PROMPTS, SUPPORTED_MODES
+from app.models.inquiry import KnowledgePolicy
+from app.services import retrieval_service
+from app.services import cognition_service
 
 CHROMA_DIR = os.getenv("INQUIRY_CHROMA_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\chroma_db")
 COLLECTION_NAME = os.getenv("INQUIRY_CHROMA_COLLECTION", "chat_notes")
@@ -961,7 +964,7 @@ def investigate(
     user_query: str,
     mode: str = "recall",
     scope: dict | None = None,
-    knowledge_policy: str = "memory_only",
+    knowledge_policy: str | KnowledgePolicy = "memory_only",
 ) -> dict:
     """
     Run one complete Inquiry Engine request without terminal input.
@@ -991,12 +994,12 @@ def investigate(
     current_mode = clean_mode
     ensure_refined_dirs()
 
-    search_queries = generate_search_queries(
+    search_queries = retrieval_service.generate_search_queries(
         clean_query,
         current_mode,
     )
 
-    merged_results = merge_multi_query_results(search_queries)
+    merged_results = retrieval_service.merge_multi_query_results(search_queries)
 
     clean_scope = scope or {}
 
@@ -1006,24 +1009,29 @@ def investigate(
             clean_scope,
         )
 
-    selected_results = diversify_results(
+    selected_results = retrieval_service.diversify_results(
         merged_results,
         TOP_K_FINAL,
     )
 
-    selected_results = rerank_results(
+    selected_results = retrieval_service.rerank_results(
         clean_query,
         selected_results,
         TOP_K_FINAL,
     )
 
-    # validate knowledge policy
-    if knowledge_policy not in ("memory_only", "memory_plus_model"):
-        raise ValueError("Unsupported knowledge_policy. Use 'memory_only' or 'memory_plus_model'.")
+    # Normalize and validate knowledge policy to the canonical `KnowledgePolicy` enum.
+    if isinstance(knowledge_policy, KnowledgePolicy):
+        kp = knowledge_policy
+    else:
+        try:
+            kp = KnowledgePolicy(knowledge_policy)
+        except Exception:
+            raise ValueError("Unsupported knowledge_policy. Use 'memory_only' or 'memory_plus_model'.")
 
     # Handle no-memory cases according to policy
     if not selected_results:
-        if knowledge_policy == "memory_only":
+        if kp == KnowledgePolicy.memory_only:
             return {
                 "status": "ok",
                 "query": clean_query,
@@ -1043,20 +1051,21 @@ def investigate(
             "The following answer is based on the model's general knowledge."
         )
     else:
-        organized_signals = interpret_sources(
+        organized_signals = cognition_service.interpret_sources(
             clean_query,
             selected_results,
         )
 
-    messages = build_messages(
+    messages = cognition_service.build_messages(
         clean_query,
         organized_signals,
+        current_mode,
     )
 
     response = llm_service.chat(OLLAMA_MODEL, messages)
     answer = response["message"]["content"].strip()
 
-    if knowledge_policy == "memory_plus_model" and not selected_results:
+    if kp == KnowledgePolicy.memory_plus_model and not selected_results:
         answer = (
             "No matching memories were found.\n\n"
             "The following answer is based on the model's general knowledge.\n\n"

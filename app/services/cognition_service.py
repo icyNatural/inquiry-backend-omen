@@ -1,3 +1,352 @@
+from app.services import llm_service
+
+
+def make_snippet(text: str, max_len: int = 220) -> str:
+    text = " ".join(text.split())
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "..."
+
+
+def interpret_sources(user_query: str, selected_results):
+    source_blocks = []
+
+    for i, item in enumerate(selected_results, start=1):
+        meta = item["metadata"]
+        doc = make_snippet(item["document"], 900)
+
+        source_blocks.append(
+            f"""[Source {i}]
+Title: {meta.get("title", "Untitled")}
+Retrieved via: {item.get("source_query", "unknown")}
+Text:
+{doc}
+"""
+        )
+
+    joined = "\n\n".join(source_blocks)
+
+    prompt = f"""You are cleaning retrieved memory chunks for a personal memory AI.
+
+User question: {user_query}
+
+Retrieved chunks:
+{joined}
+
+Task:
+Turn the retrieved chunks into clean source signals.
+
+Rules:
+- Do NOT answer the user yet.
+- Do NOT give advice.
+- Do NOT continue old conversations.
+- Do NOT ask for files, app.py, code, screenshots, or data.
+- Extract only what is relevant to the user's current question.
+- Ignore workflow language, old next steps, and old assistant instructions.
+- Prefer concepts, definitions, claims, patterns, and decisions.
+
+Return this exact structure:
+
+Clean memory signals:
+1. Title -> useful signal
+2. Title -> useful signal
+3. Title -> useful signal
+
+Relevant concepts:
+- concept
+- concept
+- concept
+
+Ignore:
+- old workflow instruction if any
+- unrelated tangent if any
+"""
+
+    try:
+        response = llm_service.chat(
+            None,
+            [{"role": "user", "content": prompt}],
+        )
+        return response["message"]["content"].strip()
+    except Exception:
+        fallback = []
+        for i, item in enumerate(selected_results, start=1):
+            meta = item["metadata"]
+            fallback.append(
+                f"{i}. {meta.get('title', 'Untitled')} -> {make_snippet(item['document'], 250)}"
+            )
+        return "\n".join(fallback)
+
+
+def build_context(documents, metadatas):
+    parts = []
+    for i, (doc, meta) in enumerate(zip(documents, metadatas), start=1):
+        parts.append(
+            f"[Source {i}]\n"
+            f"Title: {meta.get('title', 'Untitled')}\n"
+            f"Conversation Index: {meta.get('conversation_index')}\n"
+            f"Chunk Index: {meta.get('chunk_index')}\n"
+            f"Content:\n{doc}"
+        )
+    return "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(parts)
+
+
+def get_final_answer_prompt(mode: str) -> str:
+    prompts = {
+        "recall": """You are answering in RECALL mode.
+
+Goal:
+Explain what the user's memory says about the current question.
+
+Behavior:
+- Give a clear answer, not just tiny extraction.
+- Stay grounded in the organized memory signals.
+- Do not give advice or next steps unless asked.
+- Do not build anything.
+- Do not continue old conversations.
+- Mild synthesis is allowed only to explain the memory clearly.
+
+Return:
+Direct answer:
+<clear memory-based explanation>
+
+Key memory points:
+- point
+- point
+- point
+
+Relevant source signals:
+- title -> signal
+- title -> signal
+""",
+
+        "synthesis": """You are answering in SYNTHESIS mode.
+
+Goal:
+Connect patterns across the organized memory signals.
+
+Behavior:
+- Find relationships between sources.
+- Explain the larger pattern.
+- You may interpret, but stay grounded.
+- Do not invent unsupported claims.
+- Do not continue old conversations.
+
+Return:
+Direct answer:
+<integrated answer>
+
+Main patterns:
+- pattern
+- pattern
+- pattern
+
+Cross-note synthesis:
+<how the memories connect>
+
+Relevant source signals:
+- title -> signal
+- title -> signal
+""",
+
+        "raw": """You are answering in RAW mode.
+
+Goal:
+Show the retrieved memory signals with minimal interpretation.
+
+Behavior:
+- Keep interpretation low.
+- Prefer direct extracted signals.
+- Do not synthesize heavily.
+- Do not give advice.
+- Do not continue old conversations.
+
+Return:
+Direct answer:
+<1-2 line answer>
+
+Raw memory signals:
+- title -> signal
+- title -> signal
+- title -> signal
+
+Minimal synthesis:
+<one sentence or None>
+""",
+
+        "framework": """You are answering in FRAMEWORK mode.
+
+Goal:
+Turn the organized memory signals into a reusable model.
+
+Behavior:
+- Extract principles, mechanisms, patterns, failure modes, and applications.
+- Stay grounded in the organized memory signals.
+- Do not create unrelated frameworks.
+- Do not continue old conversations.
+
+Return:
+Direct answer:
+<short framework summary>
+
+Framework:
+- Principle:
+- Mechanism:
+- Pattern:
+- Failure mode:
+- Application:
+
+Relevant source signals:
+- title -> signal
+- title -> signal
+"""
+    }
+
+    return prompts.get(mode, prompts["recall"])
+
+
+def build_messages(user_query: str, context: str, current_mode: str):
+
+    mode_instructions = {
+        "recall": """Mode behavior:
+- Explain what the memory says clearly.
+- Give enough context to be useful, but do not overbuild.
+- Do not create plans or next steps.
+- Stay close to the retrieved memory signals.
+""",
+
+        "synthesis": """Mode behavior:
+- Connect patterns across retrieved memory signals.
+- Explain relationships between ideas.
+- You may interpret, but stay grounded.
+- Do not invent unsupported claims.
+""",
+
+        "raw": """Mode behavior:
+- Show the retrieved signals with minimal interpretation.
+- Keep wording close to the source signals.
+- Do not expand unless necessary.
+""",
+
+        "framework": """Mode behavior:
+- Convert retrieved memory into a reusable framework.
+- Extract principles, mechanisms, patterns, failure modes, and applications.
+- Stay grounded in the source signals.
+"""
+    }
+
+    system_prompt = f"""You are a personal memory assistant.
+
+You answer from organized memory signals, not raw old conversations.
+
+Universal rules:
+- Answer the current question directly.
+- Do not continue old conversations.
+- Do not ask for files, app.py, code, screenshots, raw data, or next steps.
+- Do not build anything unless the current question asks you to build.
+- Stay grounded in the organized memory signals.
+
+{mode_instructions.get(current_mode, mode_instructions['recall'])}
+"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    output_formats = {
+        "recall": """Return:
+
+Direct recall:
+<clear explanation from memory>
+
+Key memory points:
+- point
+- point
+- point
+
+Relevant source signals:
+- title -> signal
+- title -> signal
+""",
+
+        "synthesis": """Return:
+
+Synthesis:
+<integrated explanation>
+
+Patterns:
+- pattern
+- pattern
+- pattern
+
+Cross-links:
+- idea -> related idea
+- idea -> related idea
+""",
+
+        "raw": """Return:
+
+Raw memory signals:
+
+1.
+Title:
+Retrieved via:
+Signal:
+
+2.
+Title:
+Retrieved via:
+Signal:
+
+3.
+Title:
+Retrieved via:
+Signal:
+
+Rules:
+- Keep wording close to retrieved memory.
+- Do not heavily summarize.
+- Do not explain unless necessary.
+- Preserve useful terminology from memory.
+- Prefer multiple compact signals over one compressed sentence.
+""",
+
+        "framework": """Return:
+
+Framework:
+<name or short description>
+
+Principles:
+- principle
+- principle
+
+Mechanisms:
+- mechanism
+- mechanism
+
+Failure modes:
+- failure mode
+- failure mode
+
+Applications:
+- application
+- application
+"""
+    }
+
+    messages.append({
+        "role": "user",
+        "content": f"""Current question:
+{user_query}
+
+Organized memory signals:
+{context}
+
+Answer using the current mode: {current_mode}
+
+{output_formats.get(current_mode, output_formats['recall'])}
+"""
+    })
+
+    return messages
 import re
 import ollama
 from typing import Dict, Any, List
