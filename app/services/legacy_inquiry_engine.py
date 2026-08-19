@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 from app.services import llm_service
 
 from app.services.scope_service import ScopeProcessor
+from app.services.query_analysis_service import analyze_query
 from app.services.mode_prompts import MODE_PROMPTS, SUPPORTED_MODES
 from app.models.inquiry import KnowledgePolicy
 from app.services import retrieval_service
@@ -994,8 +995,14 @@ def investigate(
     current_mode = clean_mode
     ensure_refined_dirs()
 
+    # Run query analysis (normalization + classification) before retrieval
+    qa = analyze_query(clean_query)
+
+    # Use normalized query for search/retrieval
+    normalized_for_search = qa.normalized_query
+
     search_queries = retrieval_service.generate_search_queries(
-        clean_query,
+        normalized_for_search,
         current_mode,
     )
 
@@ -1032,9 +1039,21 @@ def investigate(
     # Handle no-memory cases according to policy
     if not selected_results:
         if kp == KnowledgePolicy.memory_only:
+            # include query analysis trace in early return
             return {
                 "status": "ok",
                 "query": clean_query,
+                "original_query": qa.original_query,
+                "normalized_query": qa.normalized_query,
+                "query_changed": qa.changed,
+                "question_type": qa.question_type,
+                "source_plan": {
+                    "personal_memory": qa.source_plan.personal_memory,
+                    "external_web": qa.source_plan.external_web,
+                    "scientific_sources": qa.source_plan.scientific_sources,
+                    "model_knowledge": qa.source_plan.model_knowledge,
+                },
+                "reasoning_depth": qa.reasoning_depth,
                 "mode": current_mode,
                 "model": OLLAMA_MODEL,
                 "answer": "No memories matched the requested scope.",
@@ -1094,9 +1113,21 @@ def investigate(
             }
         )
 
-    return {
+    result = {
         "status": "ok",
         "query": clean_query,
+        # Query analysis trace
+        "original_query": qa.original_query,
+        "normalized_query": qa.normalized_query,
+        "query_changed": qa.changed,
+        "question_type": qa.question_type,
+        "source_plan": {
+            "personal_memory": qa.source_plan.personal_memory,
+            "external_web": qa.source_plan.external_web,
+            "scientific_sources": qa.source_plan.scientific_sources,
+            "model_knowledge": qa.source_plan.model_knowledge,
+        },
+        "reasoning_depth": qa.reasoning_depth,
         "mode": current_mode,
         "model": OLLAMA_MODEL,
         "answer": answer,
@@ -1106,3 +1137,5 @@ def investigate(
         "selected_count": len(selected_results),
         "sources": sources,
     }
+
+    return result
