@@ -24,7 +24,7 @@ TOP_K_PER_QUERY = 8
 MAX_HISTORY_TURNS = 0
 SNIPPET_LEN = 220
 
-REFINED_ROOT = Path(os.getenv("INQUIRY_REFINED_NOTES_PATH", r"C:\Users\justc\OneDrive\Documents\ai_brain_notes - Copy\inquiry_engine_step3_complete\refined_notes"))
+REFINED_ROOT = Path(os.getenv("INQUIRY_REFINED_NOTES_PATH", Path(__file__).resolve().parents[1] / "refined_notes"))
 
 # Use memory_service where possible for collection/embedding access (centralized in Phase 3)
 from app.services.memory_service import get_collection, get_embedding_model
