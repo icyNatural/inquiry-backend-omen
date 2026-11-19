@@ -19,13 +19,18 @@ class SaveNotePayload(BaseModel):
 def get_note_content(path: str):
     try:
         return {"content": memory_service.read_note_content(path)}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid note path")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Note not found")
 
 
 @router.post("/notes/save")
 def save_note(payload: SaveNotePayload):
-    memory_service.save_note_content(payload.path, payload.content)
+    try:
+        memory_service.save_note_content(payload.path, payload.content)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid note path")
     return {"status": "ok", "path": payload.path}
 
 
