@@ -1,6 +1,7 @@
 import re
 import json
 from pathlib import Path
+from app.services.note_paths import resolve_note_path
 from datetime import datetime
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -221,14 +222,14 @@ def get_refined_notes_list():
 
 def read_note_content(rel_path):
     """Read full note content given its relative path"""
-    file_path = REFINED_DIR / rel_path
+    file_path = resolve_note_path(REFINED_DIR, rel_path)
     if not file_path.exists():
         raise FileNotFoundError(f"Note not found: {rel_path}")
     return file_path.read_text(encoding="utf-8")
 
 def save_note_content(rel_path, content):
     """Save note content and trigger auto-indexing"""
-    file_path = REFINED_DIR / rel_path
+    file_path = resolve_note_path(REFINED_DIR, rel_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding="utf-8")
     index_refined_note(file_path)
